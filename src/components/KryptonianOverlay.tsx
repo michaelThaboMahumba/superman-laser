@@ -1,5 +1,5 @@
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { useMediaPipe } from '../hooks/useMediaPipe';
 import { LaserEffect } from '../effects/LaserEffect';
@@ -7,7 +7,7 @@ import { ExplosionEffect } from '../effects/ExplosionEffect';
 import { audioService } from '../services/AudioService';
 import { VIDEO_WIDTH, VIDEO_HEIGHT } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
-import { Zap, Hand, Loader2 } from 'lucide-react';
+import { Zap, Hand, Loader2, Settings, X } from 'lucide-react';
 
 export default function KryptonianOverlay() {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -24,8 +24,40 @@ export default function KryptonianOverlay() {
   const [isClapping, setIsClapping] = useState(false);
   const [isLaserActive, setIsLaserActive] = useState(false);
   const [faceDetected, setFaceDetected] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  
+  // Sensitivity Settings
+  const [squintThreshold, setSquintThreshold] = useState(0.4);
+  const [clapThreshold, setClapThreshold] = useState(0.1);
+
   const lastClapTime = useRef(0);
   const laserStateRef = useRef({ active: false, positions: [] as THREE.Vector3[] });
+
+  const startCamera = useCallback(async () => {
+    if (!videoRef.current) return;
+    setCameraError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { 
+          width: { ideal: VIDEO_WIDTH }, 
+          height: { ideal: VIDEO_HEIGHT },
+          facingMode: "user"
+        }
+      });
+      videoRef.current.srcObject = stream;
+      await videoRef.current.play();
+    } catch (err: any) {
+      console.error("Camera error:", err);
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        setCameraError("Camera access denied. Please click the button below or check your browser settings to allow camera access.");
+      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+        setCameraError("No camera found on this device. Please connect a camera to continue.");
+      } else {
+        setCameraError("Could not access camera. Please ensure no other application is using it and try again.");
+      }
+    }
+  }, []);
 
   // Initialize Three.js
   useEffect(() => {
@@ -132,7 +164,7 @@ export default function KryptonianOverlay() {
           const squintLeft = blendshapes?.find(c => c.categoryName === 'eyeSquintLeft')?.score || 0;
           const squintRight = blendshapes?.find(c => c.categoryName === 'eyeSquintRight')?.score || 0;
           
-          const active = squintLeft > 0.4 && squintRight > 0.4;
+          const active = squintLeft > squintThreshold && squintRight > squintThreshold;
           
           if (active && !isLaserActive) {
             audioService.playLaserCharge();
@@ -161,7 +193,7 @@ export default function KryptonianOverlay() {
         );
 
         // Clap detection: distance threshold + cooldown
-        if (dist < 0.1 && Date.now() - lastClapTime.current > 1000) {
+        if (dist < clapThreshold && Date.now() - lastClapTime.current > 1000) {
           lastClapTime.current = Date.now();
           
           // Trigger explosion at midpoint
@@ -187,7 +219,7 @@ export default function KryptonianOverlay() {
 
     detect();
     return () => cancelAnimationFrame(animationFrameId);
-  }, [faceLandmarker, handLandmarker, isLoaded]);
+  }, [faceLandmarker, handLandmarker, isLoaded, squintThreshold, clapThreshold]);
 
   // Start Camera
   useEffect(() => {
@@ -197,20 +229,8 @@ export default function KryptonianOverlay() {
     };
     window.addEventListener('click', handleFirstClick);
 
-    async function startCamera() {
-      if (!videoRef.current) return;
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: VIDEO_WIDTH, height: VIDEO_HEIGHT }
-        });
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      } catch (err) {
-        console.error("Camera error:", err);
-      }
-    }
     startCamera();
-  }, []);
+  }, [startCamera]);
 
   return (
     <div className="relative w-full h-screen bg-black overflow-hidden flex items-center justify-center">
@@ -263,7 +283,14 @@ export default function KryptonianOverlay() {
           </div>
         </motion.div>
 
-        <div className="flex flex-col gap-4 items-end">
+        <div className="flex flex-col gap-4 items-end pointer-events-auto">
+          <button 
+            onClick={() => setShowSettings(!showSettings)}
+            className="p-2 rounded-full bg-black/50 border border-white/10 text-white/50 hover:text-white hover:border-white/30 transition-all mb-2"
+          >
+            <Settings size={20} />
+          </button>
+
           <StatusIndicator 
             active={faceDetected} 
             icon={<Loader2 size={16} className={faceDetected ? "" : "animate-spin"} />} 
@@ -285,9 +312,94 @@ export default function KryptonianOverlay() {
         </div>
       </div>
 
+      {/* Settings Panel */}
+      <AnimatePresence>
+        {showSettings && (
+          <motion.div
+            initial={{ x: 300, opacity: 0 }}
+            animate={{ x: 0, opacity: 1 }}
+            exit={{ x: 300, opacity: 0 }}
+            className="absolute right-8 top-48 w-72 bg-black/80 border border-white/10 rounded-2xl p-6 backdrop-blur-xl z-50"
+          >
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-sm font-bold uppercase tracking-widest text-red-500">Sensitivity Calibration</h3>
+              <button onClick={() => setShowSettings(false)} className="text-white/30 hover:text-white">
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="space-y-8">
+              <div className="space-y-3">
+                <div className="flex justify-between items-end">
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-white/50">Heat Vision (Squint)</label>
+                  <span className="text-[10px] font-mono text-red-500">{(100 - squintThreshold * 100).toFixed(0)}%</span>
+                </div>
+                <input 
+                  type="range" 
+                  min="0.1" 
+                  max="0.9" 
+                  step="0.05"
+                  value={squintThreshold}
+                  onChange={(e) => setSquintThreshold(parseFloat(e.target.value))}
+                  className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-red-600"
+                />
+                <p className="text-[9px] text-white/30 italic">Lower value = easier to trigger</p>
+              </div>
+
+              <div className="space-y-3">
+                <div className="flex justify-between items-end">
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-white/50">Kinetic Burst (Clap)</label>
+                  <span className="text-[10px] font-mono text-orange-500">{(clapThreshold * 100).toFixed(0)}%</span>
+                </div>
+                <input 
+                  type="range" 
+                  min="0.02" 
+                  max="0.3" 
+                  step="0.01"
+                  value={clapThreshold}
+                  onChange={(e) => setClapThreshold(parseFloat(e.target.value))}
+                  className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-orange-500"
+                />
+                <p className="text-[9px] text-white/30 italic">Higher value = easier to trigger</p>
+              </div>
+            </div>
+
+            <button 
+              onClick={() => {
+                setSquintThreshold(0.4);
+                setClapThreshold(0.1);
+              }}
+              className="mt-8 w-full py-2 border border-white/5 rounded-lg text-[10px] uppercase tracking-widest text-white/30 hover:text-white hover:bg-white/5 transition-all"
+            >
+              Reset to Default
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Instructions */}
       <AnimatePresence>
-        {!isLoaded ? (
+        {cameraError ? (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="absolute inset-0 bg-black/95 flex flex-col items-center justify-center z-[60] p-8 text-center"
+          >
+            <div className="w-16 h-16 rounded-full bg-red-600/20 flex items-center justify-center mb-6 border border-red-600/50">
+              <X className="text-red-600" size={32} />
+            </div>
+            <h2 className="text-2xl font-black text-red-600 uppercase italic mb-4 tracking-tighter">Access Denied</h2>
+            <p className="text-white/70 font-mono text-sm max-w-md leading-relaxed mb-8">
+              {cameraError}
+            </p>
+            <button 
+              onClick={() => startCamera()}
+              className="px-8 py-3 bg-red-600 text-white font-bold uppercase tracking-widest text-xs rounded-lg hover:bg-red-700 transition-colors"
+            >
+              Enable Camera
+            </button>
+          </motion.div>
+        ) : !isLoaded ? (
           <motion.div 
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
