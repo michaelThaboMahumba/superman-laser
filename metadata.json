@@ -1,0 +1,7 @@
+{
+  "name": "Kryptonian Vision",
+  "description": "An immersive AR experience where you can unleash laser eyes and trigger explosions with hand gestures using MediaPipe and Three.js.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
