@@ -1,6 +1,7 @@
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useMediaPipe } from '../hooks/useMediaPipe';
+import { useTFJS } from '../hooks/useTFJS';
 import { VIDEO_WIDTH, VIDEO_HEIGHT } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
 import { Zap, Hand, Loader2, Settings, X, Activity, Cpu, Fingerprint } from 'lucide-react';
@@ -8,7 +9,10 @@ import { Zap, Hand, Loader2, Settings, X, Activity, Cpu, Fingerprint } from 'luc
 export default function NeuralInterface() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const { faceLandmarker, handLandmarker, isLoaded } = useMediaPipe();
+  const { handLandmarker, isLoaded: isMediaPipeLoaded } = useMediaPipe();
+  const { detector: tfjsDetector, isTFJSLoaded } = useTFJS();
+
+  const isLoaded = isMediaPipeLoaded && isTFJSLoaded;
   
   const [faceDetected, setFaceDetected] = useState(false);
   const [handsDetected, setHandsDetected] = useState(0);
@@ -48,7 +52,7 @@ export default function NeuralInterface() {
   
   // Detection Loop
   useEffect(() => {
-    if (!isLoaded || !faceLandmarker || !handLandmarker || !videoRef.current) return;
+    if (!isLoaded || !tfjsDetector || !handLandmarker || !videoRef.current) return;
 
     let animationFrameId: number;
 
@@ -59,7 +63,13 @@ export default function NeuralInterface() {
       }
 
       const startTimeMs = performance.now();
-      const faceResult = faceLandmarker.detectForVideo(videoRef.current, startTimeMs);
+      
+      // TF.js Face Detection
+      const faces = await tfjsDetector.estimateFaces(videoRef.current, {
+        flipHorizontal: false, // We handle mirroring in CSS
+      });
+
+      // MediaPipe Hand Detection
       const handResult = handLandmarker.detectForVideo(videoRef.current, startTimeMs);
 
       if (canvasRef.current) {
@@ -67,52 +77,80 @@ export default function NeuralInterface() {
         if (ctx) {
           ctx.clearRect(0, 0, VIDEO_WIDTH, VIDEO_HEIGHT);
           
-          // --- Draw Face Mesh ---
-          if (faceResult.faceLandmarks && faceResult.faceLandmarks.length > 0) {
+          // --- Draw Face Mesh (TF.js) ---
+          if (faces && faces.length > 0) {
             setFaceDetected(true);
-            const landmarks = faceResult.faceLandmarks[0];
-            const blendshapes = faceResult.faceBlendshapes?.[0]?.categories || [];
+            const face = faces[0];
+            const keypoints = face.keypoints;
 
-            // Analyze Expression
-            const smile = blendshapes.find(c => c.categoryName === 'mouthSmileLeft')?.score || 0;
-            const surprise = blendshapes.find(c => c.categoryName === 'eyeWideLeft')?.score || 0;
-            const frown = blendshapes.find(c => c.categoryName === 'browDownLeft')?.score || 0;
+            // Expression logic for TF.js (manual calculation or using MediaPipe blendshapes if available)
+            // Note: TF.js Facemesh doesn't provide blendshapes by default like MediaPipe Tasks does.
+            // However, we can use the landmarks to calculate basic expressions.
+            
+            // For simplicity and to keep the "responds to expression" feature, 
+            // I'll use the landmarks to calculate simple metrics.
+            
+            const getDist = (p1: any, p2: any) => Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+            
+            // Reference: Face width
+            const faceLeft = keypoints[234];
+            const faceRight = keypoints[454];
+            const faceWidth = getDist(faceLeft, faceRight);
 
-            let color = 'rgba(0, 255, 255, 0.4)'; // Default Cyan
+            // Mouth width (Smile)
+            const mouthLeft = keypoints[61];
+            const mouthRight = keypoints[291];
+            const mouthTop = keypoints[13];
+            const mouthBottom = keypoints[14];
+            
+            const mouthWidth = getDist(mouthLeft, mouthRight);
+            const mouthHeight = getDist(mouthTop, mouthBottom);
+            
+            // Eye openness
+            const leftEyeTop = keypoints[159];
+            const leftEyeBottom = keypoints[145];
+            const leftEyeOpen = getDist(leftEyeTop, leftEyeBottom);
+
+            const smileRatio = mouthWidth / faceWidth;
+            const surpriseRatio = leftEyeOpen / faceWidth;
+            const openMouthRatio = mouthHeight / faceWidth;
+
+            let color = 'rgba(0, 255, 255, 0.4)'; 
             let expression = "Neutral";
 
-            if (smile > expressionSensitivity) {
-              color = 'rgba(0, 255, 0, 0.6)'; // Green
+            if (smileRatio > 0.45) { 
+              color = 'rgba(0, 255, 0, 0.6)'; 
               expression = "Positive";
-            } else if (surprise > expressionSensitivity) {
-              color = 'rgba(255, 255, 0, 0.6)'; // Yellow
+            } else if (surpriseRatio > 0.08) {
+              color = 'rgba(255, 255, 0, 0.6)'; 
               expression = "Surprised";
-            } else if (frown > expressionSensitivity) {
-              color = 'rgba(255, 0, 0, 0.6)'; // Red
-              expression = "Focused/Negative";
+            } else if (openMouthRatio > 0.15) {
+              color = 'rgba(255, 0, 255, 0.6)';
+              expression = "Expressive";
             }
+            
             setCurrentExpression(expression);
 
-            // Draw Mesh Connections (simplified for performance/visuals)
+            // Draw Mesh Connections
             ctx.strokeStyle = color;
             ctx.lineWidth = 0.5;
             
             // Draw points
-            landmarks.forEach((landmark, i) => {
-              if (i % 2 === 0) { // Sparse mesh for "tech" look
+            keypoints.forEach((kp, i) => {
+              if (i % 2 === 0) { 
                 ctx.beginPath();
-                ctx.arc(landmark.x * VIDEO_WIDTH, landmark.y * VIDEO_HEIGHT, 1, 0, Math.PI * 2);
+                ctx.arc(kp.x, kp.y, 1, 0, Math.PI * 2);
                 ctx.fillStyle = color;
                 ctx.fill();
               }
             });
 
-            // Draw specific features (eyes, mouth)
+            // Draw specific features
             const drawFeature = (indices: number[]) => {
               ctx.beginPath();
-              ctx.moveTo(landmarks[indices[0]].x * VIDEO_WIDTH, landmarks[indices[0]].y * VIDEO_HEIGHT);
+              ctx.moveTo(keypoints[indices[0]].x, keypoints[indices[0]].y);
               indices.forEach(idx => {
-                ctx.lineTo(landmarks[idx].x * VIDEO_WIDTH, landmarks[idx].y * VIDEO_HEIGHT);
+                ctx.lineTo(keypoints[idx].x, keypoints[idx].y);
               });
               ctx.closePath();
               ctx.stroke();
@@ -173,7 +211,7 @@ export default function NeuralInterface() {
 
     detect();
     return () => cancelAnimationFrame(animationFrameId);
-  }, [faceLandmarker, handLandmarker, isLoaded, expressionSensitivity]);
+  }, [tfjsDetector, handLandmarker, isLoaded, expressionSensitivity]);
 
   // Start Camera
   useEffect(() => {
